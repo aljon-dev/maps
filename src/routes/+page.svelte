@@ -12,16 +12,23 @@
   let zoom = $state(2);
   let imageOverlay = $state(null);
   let showImageOverlay = $state(true);
+  let userLocation = $state(null);
+  let userMarker = $state(null);
+  let userLocationWatchId = $state(null);
+  let routeLine = $state(null);
+  let isTracking = $state(false);
+   let isMapLoaded = $state(false);
   
   // Mapbox access token
   mapboxgl.accessToken = 'pk.eyJ1IjoiaW50ZWxsaXRlY2giLCJhIjoiY21jZTZzMm1xMHNmczJqcHMxOWtmaTd4aiJ9.rKhf7nuky9mqxxFAAIJlrQ';
   
   const mapStyles = [
-    { value: 'mapbox://styles/mapbox/streets-v12', label: 'Streets' },
-    { value: 'mapbox://styles/mapbox/satellite-v9', label: 'Satellite' },
-    { value: 'mapbox://styles/mapbox/outdoors-v12', label: 'Outdoors' },
-    { value: 'mapbox://styles/mapbox/light-v11', label: 'Light' },
-    { value: 'mapbox://styles/mapbox/dark-v11', label: 'Dark' }
+    { value: 'mapbox://styles/mapbox/streets-v12', label: 'Mapbox Streets' },
+    { value: 'mapbox://styles/mapbox/satellite-v9', label: 'Mapbox Satellite' },
+    { value: 'mapbox://styles/mapbox/outdoors-v12', label: 'Mapbox Outdoors' },
+    { value: 'mapbox://styles/mapbox/light-v11', label: 'Mapbox Light' },
+    { value: 'mapbox://styles/mapbox/dark-v11', label: 'Mapbox Dark' },
+    { value: 'osm', label: 'OpenStreetMap' } // OSM style option
   ];
   
   const locations = [
@@ -86,25 +93,87 @@
         map.remove();
         map = null;
       }
+      stopTracking();
     };
   });
   
   function initializeMap() {
     if (!mapContainer) return;
     
+    // Check if OSM style is selected
+    const style = mapStyle === 'osm' ? {
+      version: 8,
+      sources: {
+        'osm': {
+          type: 'raster',
+          tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© OpenStreetMap contributors',
+          maxzoom: 19
+        }
+      },
+      layers: [{
+        id: 'osm-tiles',
+        type: 'raster',
+        source: 'osm',
+        minzoom: 0,
+        maxzoom: 22
+      }]
+    } : mapStyle;
+    
     map = new mapboxgl.Map({
       container: mapContainer,
-      style: mapStyle,
+      style: style,
       center: [0, 20],
       zoom: 2,
       attributionControl: true,
       logoPosition: 'bottom-right'
     });
-    
+
     map.on('load', () => {
+      isMapLoaded = true;
       addLocationMarkers();
-      addImageOverlay();
       map.resize();
+
+      // Add the shared vector source
+      map.addSource('custom-subdivision', {
+        type: 'vector',
+        url: 'mapbox://intellitech.cmcvfdnh94n7d1opc2a1415bx-0v6mz'
+      });
+
+      // Polygon layer
+      map.addLayer({
+        id: 'custom-polygon-layer',
+        type: 'fill',
+        source: 'custom-subdivision',
+        'source-layer': 'StartUp',
+        paint: {
+          'fill-color': '#3b82f6',
+          'fill-opacity': 0.4
+        },
+        filter: ['==', '$type', 'Polygon']
+      });
+
+      // Line layer (on top of polygons)
+      map.addLayer({
+        id: 'custom-line-layer',
+        type: 'line',
+        source: 'custom-subdivision',
+        'source-layer': 'StartUp',
+        paint: {
+          'line-color': '#ef4444',
+          'line-width': 2
+        },
+        filter: ['==', '$type', 'LineString']
+      });
+
+      map.on('load', () => {
+  const features = map.querySourceFeatures('your-source-id');
+  console.log(features.filter(f => f.geometry.type === 'LineString'));
+});
+
+      // Add navigation controls
+      map.addControl(new mapboxgl.NavigationControl(), 'top-right');
     });
     
     map.on('mousemove', (e) => {
@@ -119,10 +188,13 @@
     });
     
     map.on('click', (e) => {
-      // Only add marker if not clicking on existing marker
       if (!e.originalEvent.target.closest('.mapboxgl-marker')) {
         addCustomMarker(e.lngLat.lng, e.lngLat.lat);
       }
+    });
+    
+    map.on('error', (e) => {
+      console.error('Map error:', e.error);
     });
     
     const resizeObserver = new ResizeObserver(() => {
@@ -135,45 +207,206 @@
       resizeObserver.observe(mapContainer);
     }
   }
-  
-  function addImageOverlay() {
-    if (!map) return;
+
+   function changeMapStyle(newStyle) {
+    if (!map || !isMapLoaded || newStyle === mapStyle) return;
     
-    const currentConfig = imageSizes[selectedSize];
+    const currentMarkers = [...markers];
+    const hadImageOverlay = map.getSource('image-overlay');
+    const wasTracking = isTracking;
     
-    if (map.getSource('image-overlay')) {
-      map.removeLayer('image-overlay-layer');
-      map.removeSource('image-overlay');
-    }
+    if (wasTracking) stopTracking();
     
-    map.addSource('image-overlay', {
-      type: 'image',
-      url: imageOverlayConfig.imageUrl,
-      coordinates: currentConfig.coordinates
+    // Handle OSM style differently
+    const style = newStyle === 'osm' ? {
+      version: 8,
+      sources: {
+        'osm': {
+          type: 'raster',
+          tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© OpenStreetMap contributors',
+          maxzoom: 19
+        }
+      },
+      layers: [{
+        id: 'osm-tiles',
+        type: 'raster',
+        source: 'osm',
+        minzoom: 0,
+        maxzoom: 22
+      }]
+    } : newStyle;
+    
+    isMapLoaded = false;
+    map.once('styledata', () => {
+      isMapLoaded = true;
+      
+      // Re-add sources and layers
+      if (!map.getSource('custom-subdivision')) {
+        map.addSource('custom-subdivision', {
+          type: 'vector',
+          url: 'mapbox://intellitech.cmcvfdnh94n7d1opc2a1415bx-0v6mz'
+        });
+      }
+      
+      if (!map.getLayer('custom-polygon-layer')) {
+        map.addLayer({
+          id: 'custom-polygon-layer',
+          type: 'fill',
+          source: 'custom-subdivision',
+          'source-layer': 'StartUp',
+          paint: {
+            'fill-color': '#3b82f6',
+            'fill-opacity': 0.4
+          },
+          filter: ['==', '$type', 'Polygon']
+        });
+      }
+      
+      if (!map.getLayer('custom-line-layer')) {
+        map.addLayer({
+          id: 'custom-line-layer',
+          type: 'line',
+          source: 'custom-subdivision',
+          'source-layer': 'StartUp',
+          paint: {
+            'line-color': '#ef4444',
+            'line-width': 2
+          },
+          filter: ['==', '$type', 'LineString']
+        });
+      }
+      
+      // Re-add markers
+      currentMarkers.forEach(marker => {
+        if (marker.marker._map === null) {
+          marker.marker.addTo(map);
+        }
+      });
+      
+      if (hadImageOverlay) {
+        if (!showImageOverlay) {
+          map.setLayoutProperty('image-overlay-layer', 'visibility', 'none');
+        }
+      }
+      
+      // Restart tracking if it was active
+      if (wasTracking) startTracking();
     });
     
-    map.addLayer({
-      id: 'image-overlay-layer',
-      type: 'raster',
-      source: 'image-overlay',
-      paint: {
-        'raster-opacity': 0.8,
-        'raster-fade-duration': 300
-      }
-    });
-    
-    imageOverlay = true;
+    map.setStyle(style);
+    mapStyle = newStyle;
   }
   
-  function updateImageSize(newSize) {
-    selectedSize = newSize;
-    if (map && map.getSource('image-overlay')) {
-      addImageOverlay();
-      if (!showImageOverlay) {
-        map.setLayoutProperty('image-overlay-layer', 'visibility', 'none');
+  function navigateAlongLineString() {
+    if (!map || !isMapLoaded) {
+      alert('Map is not ready yet');
+      return;
+    }
+    
+    const source = map.getSource('custom-subdivision');
+    if (!source) {
+      alert('No LineString data available');
+      return;
+    }
+    
+    try {
+      // Get LineString features from the source
+      const features = map.querySourceFeatures('custom-subdivision', {
+        sourceLayer: 'StartUp',
+        filter: ['==', '$type', 'LineString']
+      });
+      
+      if (!features || features.length === 0) {
+        alert('No LineString features found in the data source');
+        return;
       }
+      
+      // Use the first LineString feature
+      const lineString = features[0];
+      const coordinates = lineString.geometry.coordinates;
+      
+      // Remove existing route line if any
+      if (routeLine) {
+        if (map.getLayer('route-line')) map.removeLayer('route-line');
+        if (map.getSource('route-line')) map.removeSource('route-line');
+      }
+      
+      // Add the route line to the map
+      map.addSource('route-line', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: coordinates
+          }
+        }
+      });
+      
+      map.addLayer({
+        id: 'route-line',
+        type: 'line',
+        source: 'route-line',
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round'
+        },
+        paint: {
+          'line-color': '#3b82f6',
+          'line-width': 4,
+          'line-opacity': 0.7
+        }
+      });
+      
+      routeLine = true;
+      
+      // Calculate path distance
+      const pathDistance = turf.length(turf.lineString(coordinates));
+      const pathDuration = Math.min(Math.max(pathDistance * 50, 5000), 20000); // 5-20 seconds based on distance
+      
+      let startTime;
+      const animateRoute = (currentTime) => {
+        if (!startTime) startTime = currentTime;
+        const elapsedTime = currentTime - startTime;
+        const progress = Math.min(elapsedTime / pathDuration, 1);
+        
+        if (progress < 1) {
+          const along = turf.along(
+            turf.lineString(coordinates),
+            pathDistance * progress,
+            { units: 'meters' }
+          );
+          
+          const point = along.geometry.coordinates;
+          const bearing = turf.bearing(
+            turf.point(coordinates[Math.max(0, Math.floor(progress * (coordinates.length - 1)))]),
+            turf.point(coordinates[Math.min(coordinates.length - 1, Math.floor(progress * (coordinates.length - 1)) + 1)])
+          );
+          
+          map.flyTo({
+            center: point,
+            bearing: bearing,
+            zoom: 17,
+            speed: 0.5,
+            curve: 1,
+            essential: true
+          });
+          
+          requestAnimationFrame(animateRoute);
+        }
+      };
+      
+      requestAnimationFrame(animateRoute);
+    } catch (error) {
+      console.error('Navigation error:', error);
+      alert('Error during navigation: ' + error.message);
     }
   }
+
+  
   
   function toggleImageOverlay() {
     if (!map || !map.getSource('image-overlay')) return;
@@ -259,7 +492,6 @@
     
     markers = [...markers, markerObj];
     
-    // Add event listener to the remove button after popup is opened
     marker.getPopup().on('open', () => {
       const popupElement = marker.getPopup().getElement();
       const removeButton = popupElement?.querySelector('#remove-marker');
@@ -281,51 +513,13 @@
     }
   }
   
-  function changeMapStyle(newStyle) {
-    if (map && newStyle !== map.getStyle().name) {
-      const currentMarkers = [...markers];
-      const hadImageOverlay = map.getSource('image-overlay');
-      
-      map.setStyle(newStyle);
-      
-      map.once('styledata', () => {
-        currentMarkers.forEach(marker => {
-          if (marker.marker._map === null) {
-            marker.marker.addTo(map);
-          }
-        });
-        
-        if (hadImageOverlay) {
-          addImageOverlay();
-          if (!showImageOverlay) {
-            map.setLayoutProperty('image-overlay-layer', 'visibility', 'none');
-          }
-        }
-        
-        setTimeout(() => {
-          map.resize();
-        }, 100);
-      });
-    }
-  }
+  
   
   function flyToLocation(location) {
     if (map) {
       map.flyTo({
         center: [location.lng, location.lat],
         zoom: 10,
-        speed: 1.2,
-        curve: 1.42,
-        essential: true
-      });
-    }
-  }
-  
-  function flyToImageOverlay() {
-    if (map) {
-      map.flyTo({
-        center: [120.9758, 14.4716],
-        zoom: 16,
         speed: 1.2,
         curve: 1.42,
         essential: true
@@ -349,6 +543,78 @@
     }
   }
   
+  // Live location functions
+  function startTracking() {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser');
+      return;
+    }
+    
+    if (userLocationWatchId) {
+      stopTracking();
+    }
+    
+    isTracking = true;
+    
+    // Create user marker if it doesn't exist
+    if (!userMarker) {
+      userMarker = new mapboxgl.Marker({
+        color: '#10b981',
+        scale: 1.2
+      })
+        .setLngLat([0, 0])
+        .addTo(map);
+    }
+    
+    userLocationWatchId = navigator.geolocation.watchPosition(
+      (position) => {
+        userLocation = {
+          lng: position.coords.longitude,
+          lat: position.coords.latitude
+        };
+        
+        if (userMarker) {
+          userMarker.setLngLat([userLocation.lng, userLocation.lat]);
+          
+          // Center map on user location if zoomed out
+          if (map.getZoom() < 10) {
+            map.flyTo({
+              center: [userLocation.lng, userLocation.lat],
+              zoom: 14
+            });
+          }
+        }
+      },
+      (error) => {
+        console.error('Error getting location:', error);
+        alert('Error getting location: ' + error.message);
+        stopTracking();
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 10000,
+        timeout: 5000
+      }
+    );
+  }
+  
+  function stopTracking() {
+    if (userLocationWatchId) {
+      navigator.geolocation.clearWatch(userLocationWatchId);
+      userLocationWatchId = null;
+    }
+    isTracking = false;
+  }
+  
+  function toggleTracking() {
+    if (isTracking) {
+      stopTracking();
+    } else {
+      startTracking();
+    }
+  }
+  
+ 
   $effect(() => {
     if (map && mapStyle) {
       changeMapStyle(mapStyle);
@@ -358,14 +624,15 @@
 
 <svelte:head>
   <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css' rel='stylesheet' />
+  <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
 </svelte:head>
 
 <main class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
   <div class="max-w-7xl mx-auto">
     <!-- Header -->
     <div class="bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-t-xl p-6 shadow-lg">
-      <h1 class="text-3xl font-bold text-center">Mapbox GL JS with Image Overlay</h1>
-      <p class="text-center mt-2 opacity-90">Click on the map to add custom markers • Image overlay at St Joseph coordinates</p>
+      <h1 class="text-3xl font-bold text-center">Advanced Map Navigation</h1>
+      <p class="text-center mt-2 opacity-90">Live location tracking • OSM support • LineString navigation</p>
     </div>
     
     <!-- Controls -->
@@ -398,46 +665,33 @@
             >
               {showImageOverlay ? 'Hide Overlay' : 'Show Overlay'}
             </button>
-            <button
-              on:click={flyToImageOverlay}
-              class="px-3 py-2 bg-purple-500 text-white text-sm rounded-lg hover:bg-purple-600 transition-colors duration-200"
-            >
-              Go to Overlay
-            </button>
           </div>
         </div>
         
-        <!-- Opacity Control -->
+        <!-- Live Location Tracking -->
         <div>
           <label class="block text-sm font-semibold text-gray-700 mb-2">
-            Overlay Opacity
+            Live Location
           </label>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value="80"
-            class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-            on:input={(e) => updateImageOpacity(e.target.value)}
-          />
-          <div class="text-xs text-gray-500 mt-1">0% - 100%</div>
+          <button
+            on:click={toggleTracking}
+            class="w-full px-3 py-2 text-sm rounded-lg transition-colors duration-200 {isTracking ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'}"
+          >
+            {isTracking ? 'Stop Tracking' : 'Start Tracking'}
+          </button>
         </div>
         
-        <!-- Quick Locations -->
+        <!-- Navigation Controls -->
         <div>
           <label class="block text-sm font-semibold text-gray-700 mb-2">
-            Quick Locations
+            Navigation
           </label>
-          <div class="flex flex-wrap gap-1">
-            {#each locations.slice(0, 3) as location}
-              <button
-                on:click={() => flyToLocation(location)}
-                class="px-2 py-1 bg-blue-500 text-white text-xs rounded-full hover:bg-blue-600 transition-colors duration-200 hover:scale-105"
-              >
-                {location.name}
-              </button>
-            {/each}
-          </div>
+          <button
+            on:click={navigateAlongLineString}
+            class="w-full px-3 py-2 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg transition-colors duration-200"
+          >
+            Follow LineString
+          </button>
         </div>
         
         <!-- Actions -->
@@ -506,9 +760,9 @@
         </div>
         
         <div class="bg-gray-50 p-3 rounded-lg">
-          <h3 class="font-semibold text-gray-700 mb-1">Image Overlay</h3>
-          <p class="text-xs {showImageOverlay ? 'text-green-600' : 'text-red-600'}">
-            {showImageOverlay ? 'Visible' : 'Hidden'}
+          <h3 class="font-semibold text-gray-700 mb-1">Tracking</h3>
+          <p class="text-xs {isTracking ? 'text-green-600' : 'text-red-600'}">
+            {isTracking ? 'Active' : 'Inactive'}
           </p>
         </div>
         
@@ -523,22 +777,24 @@
       <div class="mt-4 p-3 bg-blue-50 rounded-lg">
         <h4 class="font-semibold text-blue-800 mb-2">Instructions:</h4>
         <ul class="text-xs text-blue-700 space-y-1">
-          <li>• <strong>Click</strong> anywhere on the map to add a red custom marker</li>
-          <li>• <strong>Toggle image overlay</strong> to show/hide the raster image at St Joseph coordinates</li>
-          <li>• <strong>Adjust opacity</strong> using the slider to make the overlay more or less transparent</li>
-          <li>• <strong>Go to Overlay</strong> button will fly to the image overlay location</li>
-          <li>• <strong>Use location buttons</strong> for quick navigation to major cities</li>
-          <li>• <strong>Change map style</strong> - the overlay will persist across style changes</li>
+          <li>• <strong>Click</strong> anywhere on the map to add a custom marker</li>
+          <li>• <strong>Start Tracking</strong> to follow your live GPS location</li>
+          <li>• <strong>Follow LineString</strong> to navigate along the path in your data</li>
+          <li>• <strong>Toggle image overlay</strong> to show/hide the raster image</li>
+          <li>• <strong>Change map style</strong> - includes OpenStreetMap option</li>
         </ul>
       </div>
       
       <div class="mt-3 p-3 bg-yellow-50 rounded-lg">
-        <h4 class="font-semibold text-yellow-800 mb-2">Image Overlay Info:</h4>
+        <h4 class="font-semibold text-yellow-800 mb-2">Location Info:</h4>
         <p class="text-xs text-yellow-700">
-          <strong>Location:</strong> St Joseph (120.9758, 14.4716)<br>
-          <strong>Current Image:</strong> Sample radar animation (replace with your subdivision map)<br>
-          <strong>Coverage:</strong> Approximately 0.01° x 0.01° area - perfect for subdivision maps<br>
-          <strong>Zoom Level:</strong> Optimized for detailed street-level view
+          {#if userLocation}
+            <strong>Your Location:</strong> {userLocation.lng.toFixed(6)}, {userLocation.lat.toFixed(6)}<br>
+          {:else}
+            <strong>Your Location:</strong> Not tracking<br>
+          {/if}
+          <strong>Map Center:</strong> {coordinates.lng}, {coordinates.lat}<br>
+          <strong>Zoom Level:</strong> {zoom}
         </p>
       </div>
     </div>
