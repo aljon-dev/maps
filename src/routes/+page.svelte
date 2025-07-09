@@ -10,14 +10,15 @@
   let markers = $state([]);
   let coordinates = $state({ lng: 120.9758, lat: 14.4716 });
   let zoom = $state(2);
-  let imageOverlay = $state(null);
-  let showImageOverlay = $state(true);
   let userLocation = $state(null);
   let userMarker = $state(null);
   let userLocationWatchId = $state(null);
   let routeLine = $state(null);
   let isTracking = $state(false);
-   let isMapLoaded = $state(false);
+  let isMapLoaded = $state(false);
+  let isLoading = $state(false);
+  let errorMessage = $state(null);
+  let successMessage = $state(null);
   
   // Mapbox access token
   mapboxgl.accessToken = 'pk.eyJ1IjoiaW50ZWxsaXRlY2giLCJhIjoiY21jZTZzMm1xMHNmczJqcHMxOWtmaTd4aiJ9.rKhf7nuky9mqxxFAAIJlrQ';
@@ -28,61 +29,13 @@
     { value: 'mapbox://styles/mapbox/outdoors-v12', label: 'Mapbox Outdoors' },
     { value: 'mapbox://styles/mapbox/light-v11', label: 'Mapbox Light' },
     { value: 'mapbox://styles/mapbox/dark-v11', label: 'Mapbox Dark' },
-    { value: 'osm', label: 'OpenStreetMap' } // OSM style option
+    { value: 'osm', label: 'OpenStreetMap' }
   ];
   
   const locations = [
     { name: 'St Joseph', lng: 120.9758, lat: 14.4716 },
   ];
-  
-  // Image overlay configuration
-  const imageOverlayConfig = {
-    imageUrl: 'https://docs.mapbox.com/mapbox-gl-js/assets/radar.gif',
-    coordinates: [
-      [120.9748, 14.4726], // top left
-      [120.9768, 14.4726], // top right  
-      [120.9768, 14.4706], // bottom right
-      [120.9748, 14.4706]  // bottom left
-    ]
-  };
-  
-  const imageSizes = {
-    'very-small': {
-      coordinates: [
-        [120.9753, 14.4721], // top left
-        [120.9763, 14.4721], // top right  
-        [120.9763, 14.4711], // bottom right
-        [120.9753, 14.4711]  // bottom left
-      ]
-    },
-    'small': {
-      coordinates: [
-        [120.9748, 14.4726], // top left
-        [120.9768, 14.4726], // top right  
-        [120.9768, 14.4706], // bottom right
-        [120.9748, 14.4706]  // bottom left
-      ]
-    },
-    'medium': {
-      coordinates: [
-        [120.9738, 14.4736], // top left
-        [120.9778, 14.4736], // top right  
-        [120.9778, 14.4696], // bottom right
-        [120.9738, 14.4696]  // bottom left
-      ]
-    },
-    'large': {
-      coordinates: [
-        [120.9708, 14.4766], // top left
-        [120.9808, 14.4766], // top right  
-        [120.9808, 14.4666], // bottom right
-        [120.9708, 14.4666]  // bottom left
-      ]
-    }
-  };
-  
-  let selectedSize = $state('small');
-  
+
   onMount(() => {
     setTimeout(() => {
       initializeMap();
@@ -167,11 +120,6 @@
         filter: ['==', '$type', 'LineString']
       });
 
-      map.on('load', () => {
-  const features = map.querySourceFeatures('your-source-id');
-  console.log(features.filter(f => f.geometry.type === 'LineString'));
-});
-
       // Add navigation controls
       map.addControl(new mapboxgl.NavigationControl(), 'top-right');
     });
@@ -195,6 +143,7 @@
     
     map.on('error', (e) => {
       console.error('Map error:', e.error);
+      showError('Map error: ' + e.error.message);
     });
     
     const resizeObserver = new ResizeObserver(() => {
@@ -208,11 +157,20 @@
     }
   }
 
-   function changeMapStyle(newStyle) {
+  function showError(message) {
+    errorMessage = message;
+    setTimeout(() => errorMessage = null, 5000);
+  }
+
+  function showSuccess(message) {
+    successMessage = message;
+    setTimeout(() => successMessage = null, 5000);
+  }
+
+  function changeMapStyle(newStyle) {
     if (!map || !isMapLoaded || newStyle === mapStyle) return;
     
     const currentMarkers = [...markers];
-    const hadImageOverlay = map.getSource('image-overlay');
     const wasTracking = isTracking;
     
     if (wasTracking) stopTracking();
@@ -285,12 +243,6 @@
         }
       });
       
-      if (hadImageOverlay) {
-        if (!showImageOverlay) {
-          map.setLayoutProperty('image-overlay-layer', 'visibility', 'none');
-        }
-      }
-      
       // Restart tracking if it was active
       if (wasTracking) startTracking();
     });
@@ -301,15 +253,11 @@
   
   function navigateAlongLineString() {
     if (!map || !isMapLoaded) {
-      alert('Map is not ready yet');
+      showError('Map is not ready yet');
       return;
     }
     
-    const source = map.getSource('custom-subdivision');
-    if (!source) {
-      alert('No LineString data available');
-      return;
-    }
+    isLoading = true;
     
     try {
       // Get LineString features from the source
@@ -319,7 +267,8 @@
       });
       
       if (!features || features.length === 0) {
-        alert('No LineString features found in the data source');
+        showError('No LineString features found in the data source');
+        isLoading = false;
         return;
       }
       
@@ -396,34 +345,18 @@
           });
           
           requestAnimationFrame(animateRoute);
+        } else {
+          isLoading = false;
+          showSuccess('Navigation completed successfully');
         }
       };
       
       requestAnimationFrame(animateRoute);
     } catch (error) {
       console.error('Navigation error:', error);
-      alert('Error during navigation: ' + error.message);
+      showError('Error during navigation: ' + error.message);
+      isLoading = false;
     }
-  }
-
-  
-  
-  function toggleImageOverlay() {
-    if (!map || !map.getSource('image-overlay')) return;
-    
-    showImageOverlay = !showImageOverlay;
-    
-    if (showImageOverlay) {
-      map.setLayoutProperty('image-overlay-layer', 'visibility', 'visible');
-    } else {
-      map.setLayoutProperty('image-overlay-layer', 'visibility', 'none');
-    }
-  }
-  
-  function updateImageOpacity(opacity) {
-    if (!map || !map.getSource('image-overlay')) return;
-    
-    map.setPaintProperty('image-overlay-layer', 'raster-opacity', opacity / 100);
   }
   
   function addLocationMarkers() {
@@ -513,8 +446,6 @@
     }
   }
   
-  
-  
   function flyToLocation(location) {
     if (map) {
       map.flyTo({
@@ -531,6 +462,7 @@
     const customMarkers = markers.filter(marker => marker.isCustom);
     customMarkers.forEach(marker => marker.marker.remove());
     markers = markers.filter(marker => !marker.isCustom);
+    showSuccess('Custom markers cleared');
   }
   
   function resetView() {
@@ -540,13 +472,14 @@
         zoom: 2,
         speed: 1.5
       });
+      showSuccess('View reset to default');
     }
   }
   
   // Live location functions
   function startTracking() {
     if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser');
+      showError('Geolocation is not supported by your browser');
       return;
     }
     
@@ -570,7 +503,8 @@
       (position) => {
         userLocation = {
           lng: position.coords.longitude,
-          lat: position.coords.latitude
+          lat: position.coords.latitude,
+          accuracy: position.coords.accuracy
         };
         
         if (userMarker) {
@@ -587,7 +521,7 @@
       },
       (error) => {
         console.error('Error getting location:', error);
-        alert('Error getting location: ' + error.message);
+        showError('Error getting location: ' + error.message);
         stopTracking();
       },
       {
@@ -596,6 +530,8 @@
         timeout: 5000
       }
     );
+    
+    showSuccess('Location tracking started');
   }
   
   function stopTracking() {
@@ -604,6 +540,7 @@
       userLocationWatchId = null;
     }
     isTracking = false;
+    showSuccess('Location tracking stopped');
   }
   
   function toggleTracking() {
@@ -614,7 +551,6 @@
     }
   }
   
- 
   $effect(() => {
     if (map && mapStyle) {
       changeMapStyle(mapStyle);
@@ -631,13 +567,26 @@
   <div class="max-w-7xl mx-auto">
     <!-- Header -->
     <div class="bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-t-xl p-6 shadow-lg">
-      <h1 class="text-3xl font-bold text-center">Advanced Map Navigation</h1>
-      <p class="text-center mt-2 opacity-90">Live location tracking • OSM support • LineString navigation</p>
+      <h1 class="text-3xl font-bold text-center">LineString Navigation</h1>
+      <p class="text-center mt-2 opacity-90">Live location tracking • Path navigation • GPS guidance</p>
     </div>
+    
+    <!-- Messages -->
+    {#if errorMessage}
+      <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4" role="alert">
+        <p>{errorMessage}</p>
+      </div>
+    {/if}
+    
+    {#if successMessage}
+      <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4" role="alert">
+        <p>{successMessage}</p>
+      </div>
+    {/if}
     
     <!-- Controls -->
     <div class="bg-white p-6 border-x border-gray-200 shadow-sm">
-      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+      <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <!-- Map Style Selector -->
         <div>
           <label class="block text-sm font-semibold text-gray-700 mb-2">
@@ -651,21 +600,6 @@
               <option value={style.value}>{style.label}</option>
             {/each}
           </select>
-        </div>
-        
-        <!-- Image Overlay Controls -->
-        <div>
-          <label class="block text-sm font-semibold text-gray-700 mb-2">
-            Image Overlay
-          </label>
-          <div class="flex flex-col gap-2">
-            <button
-              on:click={toggleImageOverlay}
-              class="px-3 py-2 text-sm rounded-lg transition-colors duration-200 {showImageOverlay ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-gray-300 hover:bg-gray-400 text-gray-700'}"
-            >
-              {showImageOverlay ? 'Hide Overlay' : 'Show Overlay'}
-            </button>
-          </div>
         </div>
         
         <!-- Live Location Tracking -->
@@ -688,9 +622,10 @@
           </label>
           <button
             on:click={navigateAlongLineString}
-            class="w-full px-3 py-2 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg transition-colors duration-200"
+            disabled={isLoading}
+            class="w-full px-3 py-2 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Follow LineString
+            {isLoading ? 'Navigating...' : 'Follow LineString'}
           </button>
         </div>
         
@@ -704,7 +639,7 @@
               on:click={clearCustomMarkers}
               class="px-4 py-2 bg-red-500 text-white text-sm rounded-lg hover:bg-red-600 transition-colors duration-200"
             >
-              Clear Custom
+              Clear Custom Markers
             </button>
             <button
               on:click={resetView}
@@ -780,7 +715,6 @@
           <li>• <strong>Click</strong> anywhere on the map to add a custom marker</li>
           <li>• <strong>Start Tracking</strong> to follow your live GPS location</li>
           <li>• <strong>Follow LineString</strong> to navigate along the path in your data</li>
-          <li>• <strong>Toggle image overlay</strong> to show/hide the raster image</li>
           <li>• <strong>Change map style</strong> - includes OpenStreetMap option</li>
         </ul>
       </div>
@@ -790,6 +724,7 @@
         <p class="text-xs text-yellow-700">
           {#if userLocation}
             <strong>Your Location:</strong> {userLocation.lng.toFixed(6)}, {userLocation.lat.toFixed(6)}<br>
+            <strong>Accuracy:</strong> {userLocation.accuracy?.toFixed(2) || 'Unknown'} meters<br>
           {:else}
             <strong>Your Location:</strong> Not tracking<br>
           {/if}
@@ -839,35 +774,5 @@
   :global(.mapboxgl-ctrl-zoom-out) {
     background-color: rgba(255, 255, 255, 0.9);
     backdrop-filter: blur(4px);
-  }
-  
-  input[type="range"]::-webkit-slider-thumb {
-    appearance: none;
-    height: 20px;
-    width: 20px;
-    border-radius: 50%;
-    background: #8b5cf6;
-    cursor: pointer;
-    box-shadow: 0 0 2px 0 #555;
-    transition: background .15s ease-in-out;
-  }
-  
-  input[type="range"]::-webkit-slider-thumb:hover {
-    background: #7c3aed;
-  }
-  
-  input[type="range"]::-moz-range-thumb {
-    height: 20px;
-    width: 20px;
-    border-radius: 50%;
-    background: #8b5cf6;
-    cursor: pointer;
-    border: none;
-    box-shadow: 0 0 2px 0 #555;
-    transition: background .15s ease-in-out;
-  }
-  
-  input[type="range"]::-moz-range-thumb:hover {
-    background: #7c3aed;
   }
 </style>
