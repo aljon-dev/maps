@@ -138,7 +138,7 @@
       // Add the shared vector source
       map.addSource('custom-subdivision', {
         type: 'vector',
-        url: 'mapbox://intellitech.cmcvfdnh94n7d1opc2a1415bx-0v6mz'
+        url: 'mapbox://intellitech.cmcw5r4p80f841noymb6cadu3-3ftan'
       });
 
       // Polygon layer
