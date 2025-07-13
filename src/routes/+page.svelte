@@ -37,8 +37,8 @@
   let currentStep = $state('');
   let distanceToDestination = $state(0);
   let routeProgress = $state(0); // Progress from 0 to 1
-let remainingRouteCoordinates = $state([]);
-let completedRouteCoordinates = $state([]);
+    let progressPercentage = $state(0);
+  let directDistanceToDestination = $state(0);
   
   // Mapbox access token
   mapboxgl.accessToken = 'pk.eyJ1IjoiaW50ZWxsaXRlY2giLCJhIjoiY21jZTZzMm1xMHNmczJqcHMxOWtmaTd4aiJ9.rKhf7nuky9mqxxFAAIJlrQ';
@@ -511,9 +511,7 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
     currentRoute.coordinates.forEach(coord => bounds.extend(coord));
     map.fitBounds(bounds, { padding: 100 });
   }
-
-   function startNavigationUpdates() {
-
+ function startNavigationUpdates() {
     if (directionUpdateInterval) {
       clearInterval(directionUpdateInterval);
     }
@@ -526,6 +524,15 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
         [userLocation.lng, userLocation.lat],
         currentRoute.coordinates
       );
+
+      // Update direct distance to destination (straight line)
+      const destination = currentRoute.coordinates[currentRoute.coordinates.length - 1];
+      directDistanceToDestination = calculateDistance([userLocation.lng, userLocation.lat], destination);
+
+      // Calculate progress percentage (0-100)
+      const totalDistance = currentRoute.distance;
+      const traveledDistance = calculatePathDistance(currentRoute.coordinates.slice(0, closestIndex + 1));
+      progressPercentage = Math.min(100, Math.max(0, (traveledDistance / totalDistance) * 100));
 
       // Checking for cemetery
       if (!isInsideCemetery) {
@@ -550,6 +557,8 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
       }
     }, 1000);
   }
+
+   
 
   function calculateRemainingDistance(closestIndex) {
     let distance = 0;
@@ -897,6 +906,8 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
               Stop Navigation
             </button>
           </div>
+
+
         </div>
         
         <!-- Location Tracking -->
@@ -911,6 +922,14 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
             {isTracking ? 'Stop Tracking' : 'Start Tracking'}
           </button>
         </div>
+
+        <div class="bg-gray-50 p-3 rounded-lg">
+      <h3 class="font-semibold text-gray-700 mb-1">Distance Remaining</h3>
+      <p class="text-gray-600">
+        {distanceToDestination ? `${(distanceToDestination).toFixed(0)} meters` : 'Not navigating'}
+      </p>
+    </div>
+
       </div>
     </div>
     
