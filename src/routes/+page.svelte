@@ -36,6 +36,9 @@
   let isInsideCemetery = $state(false);
   let currentStep = $state('');
   let distanceToDestination = $state(0);
+  let routeProgress = $state(0); // Progress from 0 to 1
+let remainingRouteCoordinates = $state([]);
+let completedRouteCoordinates = $state([]);
   
   // Mapbox access token
   mapboxgl.accessToken = 'pk.eyJ1IjoiaW50ZWxsaXRlY2giLCJhIjoiY21jZTZzMm1xMHNmczJqcHMxOWtmaTd4aiJ9.rKhf7nuky9mqxxFAAIJlrQ';
@@ -122,7 +125,7 @@
       // Add Mapbox Vector Tileset Source
       map.addSource('custom-subdivision', {
         type: 'vector',
-        url: 'mapbox://intellitech.cmcw5r4p80f841noymb6cadu3-3ftan'
+        url: 'mapbox://intellitech.cmd24xgtn84q01nobwe0e14iu-7jics'
       });
 
       map.addLayer({
@@ -254,73 +257,66 @@
     showSuccess(`Loaded ${properties.length} grave blocks`);
   }
 
-   async function startNavigationToProperty(property) {
-    if (!property || !userLocation) {
-      showError('Please enable location tracking and select a property');
-      return;
-    }
-
-    isLoading = true;
-    isNavigating = true;
-    
-    try {
-      // Clear any existing interval
-      if (directionUpdateInterval) {
-        clearInterval(directionUpdateInterval);
-        directionUpdateInterval = null;
-      }
-
-      // First check if we're already inside the cemetery
-      const cemeteryBoundary = getCemeteryBoundary();
-      isInsideCemetery = pointInPolygon(
-        [userLocation.lng, userLocation.lat],
-        cemeteryBoundary
-      );
-
-      if (isInsideCemetery) {
-        // Use internal paths for navigation
-        await navigateUsingInternalPaths(property);
-        currentRoute = {
-          coordinates: selectedLineString.coordinates,
-          distance: calculatePathDistance(selectedLineString.coordinates),
-          steps: createInternalSteps(selectedLineString.coordinates)
-        };
-      } else {
-        // Get external route to cemetery entrance
-        const nearestEntrance = findNearestEntrance();
-        externalRoute = await getMapboxDirections(
-          [userLocation.lng, userLocation.lat],
-          [nearestEntrance.lng, nearestEntrance.lat]
-        );
-        
-     
-        await navigateUsingInternalPaths(property);
-        
-
-        currentRoute = {
-          coordinates: [...externalRoute.coordinates, ...selectedLineString.coordinates],
-          distance: externalRoute.distance + calculatePathDistance(selectedLineString.coordinates),
-          steps: [
-            ...externalRoute.steps,
-            { instruction: "Enter cemetery grounds", distance: 0 },
-            ...createInternalSteps(selectedLineString.coordinates)
-          ]
-        };
-      }
-      
-      
-      displayRoute();
-      startNavigationUpdates();
-      
-    } catch (error) {
-      console.error('Navigation error:', error);
-      showError('Failed to create route: ' + error.message);
-      stopNavigation();
-    } finally {
-      isLoading = false;
-    }
+  async function startNavigationToProperty(property) {
+  if (!property || !userLocation) {
+    showError('Please enable location tracking and select a property');
+    return;
   }
 
+  // Stop any existing navigation first
+  stopNavigation();
+
+  isLoading = true;
+  isNavigating = true;
+  
+  try {
+    // First check if we're already inside the cemetery
+    const cemeteryBoundary = getCemeteryBoundary();
+    isInsideCemetery = pointInPolygon(
+      [userLocation.lng, userLocation.lat],
+      cemeteryBoundary
+    );
+
+    if (isInsideCemetery) {
+      // Use internal paths for navigation
+      await navigateUsingInternalPaths(property);
+      currentRoute = {
+        coordinates: selectedLineString.coordinates,
+        distance: calculatePathDistance(selectedLineString.coordinates),
+        steps: createInternalSteps(selectedLineString.coordinates)
+      };
+    } else {
+      // Get external route to cemetery entrance
+      const nearestEntrance = findNearestEntrance();
+      externalRoute = await getMapboxDirections(
+        [userLocation.lng, userLocation.lat],
+        [nearestEntrance.lng, nearestEntrance.lat]
+      );
+      
+      await navigateUsingInternalPaths(property);
+      
+      currentRoute = {
+        coordinates: [...externalRoute.coordinates, ...selectedLineString.coordinates],
+        distance: externalRoute.distance + calculatePathDistance(selectedLineString.coordinates),
+        steps: [
+          ...externalRoute.steps,
+          { instruction: "Enter cemetery grounds", distance: 0 },
+          ...createInternalSteps(selectedLineString.coordinates)
+        ]
+      };
+    }
+    
+    displayRoute();
+    startNavigationUpdates();
+    
+  } catch (error) {
+    console.error('Navigation error:', error);
+    showError('Failed to create route: ' + error.message);
+    stopNavigation();
+  } finally {
+    isLoading = false;
+  }
+}
 
   function getCemeteryBoundary() {
  
@@ -349,9 +345,13 @@
   }
 
   function findNearestEntrance() {
-    // For simplicity, I use the center of the cemetery as entrance
-    return { lng: 120.9765, lat: 14.4715, name: "Main Entrance" };
-  }
+  // Use the actual entrance coordinates you provided
+  return { 
+    lng: 120.9768, 
+    lat: 14.4727, 
+    name: "Main Entrance" 
+  };
+}
 
  async function navigateUsingInternalPaths(property) {
   // Make paths visible when navigating
@@ -362,34 +362,114 @@
     layers: ['cemetery-paths']
   });
 
-  // Find the path closest to the property
+  // Find the path closest to the property and get the nearest point
   let closestPath = null;
   let minDistance = Infinity;
+  let nearestPointOnPath = null;
 
   lineFeatures.forEach(feature => {
-    const distance = calculateDistanceToPath(
+    const nearestPoint = findNearestPointOnLine(
       [property.lng, property.lat],
       feature.geometry.coordinates
     );
     
-    if (distance < minDistance) {
-      minDistance = distance;
+    if (nearestPoint.distance < minDistance) {
+      minDistance = nearestPoint.distance;
+      nearestPointOnPath = nearestPoint;
       closestPath = {
         id: feature.id,
         name: feature.properties?.name || 'Path',
-        coordinates: feature.geometry.coordinates
+        coordinates: feature.geometry.coordinates,
+        nearestIndex: nearestPoint.index
       };
     }
   });
 
   if (!closestPath) {
-
     map.setPaintProperty('cemetery-paths', 'line-opacity', 0);
     throw new Error('No paths found in the cemetery');
   }
 
-  selectedLineString = closestPath;
+  // Truncate the path to only go to the nearest point to the property
+  const truncatedCoordinates = closestPath.coordinates.slice(0, closestPath.nearestIndex + 1);
+  
+  // Add the exact nearest point as the final destination
+  truncatedCoordinates.push(nearestPointOnPath.point);
+
+  selectedLineString = {
+    ...closestPath,
+    coordinates: truncatedCoordinates
+  };
 }
+
+
+function findNearestPointOnLine(targetPoint, lineCoordinates) {
+  let nearestPoint = null;
+  let minDistance = Infinity;
+  let nearestIndex = 0;
+
+  for (let i = 0; i < lineCoordinates.length; i++) {
+    const distance = calculateDistance(targetPoint, lineCoordinates[i]);
+    if (distance < minDistance) {
+      minDistance = distance;
+      nearestPoint = lineCoordinates[i];
+      nearestIndex = i;
+    }
+  }
+
+  // Also check points between line segments for more accuracy
+  for (let i = 0; i < lineCoordinates.length - 1; i++) {
+    const segmentNearest = nearestPointOnSegment(
+      targetPoint,
+      lineCoordinates[i],
+      lineCoordinates[i + 1]
+    );
+    
+    if (segmentNearest.distance < minDistance) {
+      minDistance = segmentNearest.distance;
+      nearestPoint = segmentNearest.point;
+      nearestIndex = i;
+    }
+  }
+
+  return {
+    point: nearestPoint,
+    distance: minDistance,
+    index: nearestIndex
+  };
+}
+
+
+function nearestPointOnSegment(point, segmentStart, segmentEnd) {
+  const A = point[0] - segmentStart[0];
+  const B = point[1] - segmentStart[1];
+  const C = segmentEnd[0] - segmentStart[0];
+  const D = segmentEnd[1] - segmentStart[1];
+
+  const dot = A * C + B * D;
+  const lenSq = C * C + D * D;
+  
+  if (lenSq === 0) {
+    return {
+      point: segmentStart,
+      distance: calculateDistance(point, segmentStart)
+    };
+  }
+
+  let param = dot / lenSq;
+  param = Math.max(0, Math.min(1, param));
+
+  const nearestPoint = [
+    segmentStart[0] + param * C,
+    segmentStart[1] + param * D
+  ];
+
+  return {
+    point: nearestPoint,
+    distance: calculateDistance(point, nearestPoint)
+  };
+}
+
 
   function displayRoute() {
     if (!currentRoute) return;
@@ -498,23 +578,32 @@
     showSuccess(`Arrived at ${selectedProperty?.name || 'destination'}`);
   }
  function stopNavigation() {
-    isNavigating = false;
-    
-    // Clear the navigation interval
-    if (directionUpdateInterval) {
-      clearInterval(directionUpdateInterval);
-      directionUpdateInterval = null;
-    }
-    
-    // Remove route display
-    if (map.getSource('route')) map.removeSource('route');
-    if (map.getLayer('route')) map.removeLayer('route');
-    
-    // Hide cemetery paths if they're visible
-    if (map.getLayer('cemetery-paths')) {
-      map.setPaintProperty('cemetery-paths', 'line-opacity', 0);
-    }
+  isNavigating = false;
+  
+  // Clear the navigation interval
+  if (directionUpdateInterval) {
+    clearInterval(directionUpdateInterval);
+    directionUpdateInterval = null;
   }
+  
+  // Remove route display
+  if (map && map.getSource('route')) {
+    map.removeLayer('route');
+    map.removeSource('route');
+  }
+  
+  // Hide cemetery paths
+  if (map && map.getLayer('cemetery-paths')) {
+    map.setPaintProperty('cemetery-paths', 'line-opacity', 0);
+  }
+  
+  // Clear route data
+  currentRoute = null;
+  selectedLineString = null;
+  externalRoute = null;
+  currentStep = '';
+  distanceToDestination = 0;
+}
   // Utility functions
   function calculateDistance(point1, point2) {
     const R = 6371e3; // Earth's radius in meters
@@ -794,14 +883,14 @@
           </label>
           <div class="flex flex-col gap-2">
             <button
-              on:click={() => startNavigationToProperty(selectedProperty)}
+              onclick={() => startNavigationToProperty(selectedProperty)}
               disabled={isLoading || !selectedProperty}
               class="w-full px-3 py-2 bg-purple-500 hover:bg-purple-600 text-white text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isLoading ? 'Calculating route...' : 'Navigate'}
             </button>
             <button
-              on:click={stopNavigation}
+              onclick={stopNavigation}
               disabled={!isNavigating}
               class="w-full px-3 py-2 bg-red-500 hover:bg-red-600 text-white text-sm rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
@@ -816,7 +905,7 @@
             Location Tracking
           </label>
           <button
-            on:click={toggleTracking}
+            onclick={toggleTracking}
             class="w-full px-3 py-2 text-sm rounded-lg transition-colors duration-200 {isTracking ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'}"
           >
             {isTracking ? 'Stop Tracking' : 'Start Tracking'}
