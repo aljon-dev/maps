@@ -353,16 +353,14 @@
   };
 }
 
- async function navigateUsingInternalPaths(property) {
-  // Make paths visible when navigating
-  map.setPaintProperty('cemetery-paths', 'line-opacity', 0.8);
-  
-  // Query the path features from the correct layer
+ 
+async function navigateUsingInternalPaths(property) {
+  // Query ALL path features from the layer
   const lineFeatures = map.queryRenderedFeatures({
     layers: ['cemetery-paths']
   });
 
-  // Find the path closest to the property and get the nearest point
+  // Find the path closest to the property
   let closestPath = null;
   let minDistance = Infinity;
   let nearestPointOnPath = null;
@@ -386,14 +384,14 @@
   });
 
   if (!closestPath) {
-    map.setPaintProperty('cemetery-paths', 'line-opacity', 0);
     throw new Error('No paths found in the cemetery');
   }
 
+  // Show only the selected path by filtering
+  showOnlySelectedPath(closestPath);
+
   // Truncate the path to only go to the nearest point to the property
   const truncatedCoordinates = closestPath.coordinates.slice(0, closestPath.nearestIndex + 1);
-  
-  // Add the exact nearest point as the final destination
   truncatedCoordinates.push(nearestPointOnPath.point);
 
   selectedLineString = {
@@ -401,6 +399,20 @@
     coordinates: truncatedCoordinates
   };
 }
+
+function showOnlySelectedPath(selectedPath) {
+  // Create a filter to show only the selected path
+  const pathFilter = ['==', ['get', 'id'], selectedPath.id];
+  
+  // Apply filter to show only the selected path
+  map.setFilter('cemetery-paths', pathFilter);
+  
+  // Make the filtered path visible
+  map.setPaintProperty('cemetery-paths', 'line-opacity', 0.8);
+  map.setPaintProperty('cemetery-paths', 'line-color', '#ef4444');
+  map.setPaintProperty('cemetery-paths', 'line-width', 3);
+}
+
 
 
 function findNearestPointOnLine(targetPoint, lineCoordinates) {
@@ -601,9 +613,10 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
     map.removeSource('route');
   }
   
-  // Hide cemetery paths
+  // Hide ALL cemetery paths and remove filter
   if (map && map.getLayer('cemetery-paths')) {
     map.setPaintProperty('cemetery-paths', 'line-opacity', 0);
+    map.setFilter('cemetery-paths', null); // Remove filter to show all paths again
   }
   
   // Clear route data
@@ -826,7 +839,7 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
   <div class="max-w-7xl mx-auto">
     <!-- Header -->
     <div class="bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-t-xl p-6 shadow-lg">
-      <h1 class="text-3xl font-bold text-center">Cemetery Navigation System</h1>
+      <h1 class="text-3xl font-bold text-center">Walk To Grave</h1>
       <p class="text-center mt-2 opacity-90">Navigate to grave blocks with real-time location</p>
     </div>
     
