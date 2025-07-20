@@ -57,29 +57,33 @@
   ];
 
   onMount(() => {
-    window.addEventListener('selectProperty', (e) => {
-      const propertyName = e.detail;
-      const property = propertyFeatures.find(p => p.name === propertyName);
-      if (property) {
-        selectedProperty = property;
-        startNavigationToProperty(property);
-        showSuccess(`Selected property: ${propertyName}`);
-      }
-    });
-    
-    setTimeout(() => {
-      initializeMap();
-    }, 100);
-    
-    return () => {
-      if (map) {
-        map.remove();
-        map = null;
-      }
-      stopTracking();
-      stopNavigation();
-      window.removeEventListener('selectProperty', () => {});
-    };
+   onMount(() => {
+  window.addEventListener('selectProperty', (e) => {
+    const propertyName = e.detail;
+    const property = propertyFeatures.find(p => p.name === propertyName);
+    if (property) {
+      selectedProperty = property;
+      startNavigationToProperty(property);
+      showSuccess(`Selected property: ${propertyName}`);
+    }
+  });
+  
+  setTimeout(() => {
+    initializeMap();
+    // Auto-start tracking when component mounts
+    startTracking();
+  }, 100);
+  
+  return () => {
+    if (map) {
+      map.remove();
+      map = null;
+    }
+    stopTracking();
+    stopNavigation();
+    window.removeEventListener('selectProperty', () => {});
+  };
+});
   });
   
   function initializeMap() {
@@ -125,7 +129,7 @@
       // Add Mapbox Vector Tileset Source
       map.addSource('custom-subdivision', {
         type: 'vector',
-        url: 'mapbox://intellitech.cmd24xgtn84q01nobwe0e14iu-7jics'
+        url: 'mapbox://intellitech.cmdbonx1p42jd1ms8ozhtm3y7-5x3ym'
       });
 
       map.addLayer({
@@ -353,6 +357,22 @@
   };
 }
 
+
+function showSelectedPaths(pathFeatures) {
+  // Create array of path IDs to show
+  const pathIds = pathFeatures.map(feature => feature.id || feature.properties?.id).filter(id => id);
+  
+  if (pathIds.length > 0) {
+    // Create filter to show selected paths
+    const pathFilter = ['in', ['get', 'id'], ['literal', pathIds]];
+    map.setFilter('cemetery-paths', pathFilter);
+  }
+  
+  // Make the filtered paths visible
+  map.setPaintProperty('cemetery-paths', 'line-opacity', 0.6);
+  map.setPaintProperty('cemetery-paths', 'line-color', '#ef4444');
+  map.setPaintProperty('cemetery-paths', 'line-width', 2);
+}
  
 async function navigateUsingInternalPaths(property) {
   // Query ALL path features from the layer
@@ -360,43 +380,91 @@ async function navigateUsingInternalPaths(property) {
     layers: ['cemetery-paths']
   });
 
-  // Find the path closest to the property
-  let closestPath = null;
-  let minDistance = Infinity;
-  let nearestPointOnPath = null;
-
-  lineFeatures.forEach(feature => {
-    const nearestPoint = findNearestPointOnLine(
-      [property.lng, property.lat],
-      feature.geometry.coordinates
-    );
-    
-    if (nearestPoint.distance < minDistance) {
-      minDistance = nearestPoint.distance;
-      nearestPointOnPath = nearestPoint;
-      closestPath = {
-        id: feature.id,
-        name: feature.properties?.name || 'Path',
-        coordinates: feature.geometry.coordinates,
-        nearestIndex: nearestPoint.index
-      };
-    }
-  });
-
-  if (!closestPath) {
+  if (lineFeatures.length === 0) {
     throw new Error('No paths found in the cemetery');
   }
 
-  // Show only the selected path by filtering
-  showOnlySelectedPath(closestPath);
+  // Find user's position or cemetery entrance if user is outside
+  let startPoint = userLocation ? [userLocation.lng, userLocation.lat] : [120.9768, 14.4727];
+  
+  // Find closest path to start from
+  let closestStartPath = null;
+  let minStartDistance = Infinity;
+  let startPointOnPath = null;
 
-  // Truncate the path to only go to the nearest point to the property
-  const truncatedCoordinates = closestPath.coordinates.slice(0, closestPath.nearestIndex + 1);
-  truncatedCoordinates.push(nearestPointOnPath.point);
+  lineFeatures.forEach(feature => {
+    const nearestPoint = findNearestPointOnLine(startPoint, feature.geometry.coordinates);
+    if (nearestPoint.distance < minStartDistance) {
+      minStartDistance = nearestPoint.distance;
+      startPointOnPath = nearestPoint;
+      closestStartPath = feature;
+    }
+  });
+
+  // Find closest path to destination
+  const destinationPoint = [property.lng, property.lat];
+  let closestEndPath = null;
+  let minEndDistance = Infinity;
+  let endPointOnPath = null;
+
+  lineFeatures.forEach(feature => {
+    const nearestPoint = findNearestPointOnLine(destinationPoint, feature.geometry.coordinates);
+    if (nearestPoint.distance < minEndDistance) {
+      minEndDistance = nearestPoint.distance;
+      endPointOnPath = nearestPoint;
+      closestEndPath = feature;
+    }
+  });
+
+  // Combine all LineString coordinates into one continuous path
+  const allCoordinates = [];
+  
+  // Add starting segment
+  if (closestStartPath) {
+    const startCoords = closestStartPath.geometry.coordinates;
+    const startIndex = startPointOnPath.index;
+    
+    // Add from start point to end of first path
+    allCoordinates.push(startPointOnPath.point);
+    for (let i = startIndex + 1; i < startCoords.length; i++) {
+      allCoordinates.push(startCoords[i]);
+    }
+  }
+
+  // Connect all other paths end-to-end
+  const usedPaths = new Set([closestStartPath?.id]);
+  
+  lineFeatures.forEach(feature => {
+    if (!usedPaths.has(feature.id) && feature.id !== closestEndPath?.id) {
+      feature.geometry.coordinates.forEach(coord => {
+        allCoordinates.push(coord);
+      });
+      usedPaths.add(feature.id);
+    }
+  });
+
+  // Add ending segment to destination
+  if (closestEndPath && closestEndPath.id !== closestStartPath?.id) {
+    const endCoords = closestEndPath.geometry.coordinates;
+    const endIndex = endPointOnPath.index;
+    
+    // Add from start of end path to destination point
+    for (let i = 0; i <= endIndex; i++) {
+      allCoordinates.push(endCoords[i]);
+    }
+  }
+  
+  // Add final destination point
+  allCoordinates.push(endPointOnPath.point);
+  allCoordinates.push(destinationPoint);
+
+  // Show all paths used in navigation
+  showSelectedPaths(lineFeatures);
 
   selectedLineString = {
-    ...closestPath,
-    coordinates: truncatedCoordinates
+    id: 'combined-route',
+    name: 'Cemetery Route',
+    coordinates: allCoordinates
   };
 }
 
@@ -524,51 +592,50 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
     map.fitBounds(bounds, { padding: 100 });
   }
  function startNavigationUpdates() {
-    if (directionUpdateInterval) {
-      clearInterval(directionUpdateInterval);
+  if (directionUpdateInterval) {
+    clearInterval(directionUpdateInterval);
+  }
+
+  directionUpdateInterval = setInterval(() => {
+    if (!isTracking || !userLocation || !currentRoute) return;
+
+    const userPoint = [userLocation.lng, userLocation.lat];
+    
+    // Find closest point on route
+    const { closestIndex, distance } = findClosestPointOnRoute(userPoint, currentRoute.coordinates);
+
+    // Update direct distance to destination (straight line)
+    const destination = currentRoute.coordinates[currentRoute.coordinates.length - 1];
+    directDistanceToDestination = calculateDistance(userPoint, destination);
+
+    // Calculate progress percentage based on route progress, not just distance
+    const totalCoords = currentRoute.coordinates.length;
+    progressPercentage = Math.min(100, Math.max(0, (closestIndex / totalCoords) * 100));
+
+    // Check for cemetery entry
+    if (!isInsideCemetery) {
+      const cemeteryBoundary = getCemeteryBoundary();
+      isInsideCemetery = pointInPolygon(userPoint, cemeteryBoundary);
+
+      if (isInsideCemetery) {
+        showSuccess("Entered cemetery grounds - following internal paths");
+      }
     }
 
-    directionUpdateInterval = setInterval(() => {
-      if (!isTracking || !userLocation || !currentRoute) return;
+    // Update navigation state
+    distanceToDestination = calculateRemainingDistance(closestIndex);
+    currentStep = getCurrentStep(closestIndex, totalCoords);
 
-      // Find closest point on route
-      const { closestIndex, distance } = findClosestPointOnRoute(
-        [userLocation.lng, userLocation.lat],
-        currentRoute.coordinates
-      );
+    // More accurate arrival detection - check both distance and route completion
+    const isNearDestination = directDistanceToDestination < 10; // Within 10 meters
+    const isRouteComplete = closestIndex >= totalCoords - 2; // Near end of route
+    const isAtProperty = selectedProperty && calculateDistance(userPoint, [selectedProperty.lng, selectedProperty.lat]) < 15;
 
-      // Update direct distance to destination (straight line)
-      const destination = currentRoute.coordinates[currentRoute.coordinates.length - 1];
-      directDistanceToDestination = calculateDistance([userLocation.lng, userLocation.lat], destination);
-
-      // Calculate progress percentage (0-100)
-      const totalDistance = currentRoute.distance;
-      const traveledDistance = calculatePathDistance(currentRoute.coordinates.slice(0, closestIndex + 1));
-      progressPercentage = Math.min(100, Math.max(0, (traveledDistance / totalDistance) * 100));
-
-      // Checking for cemetery
-      if (!isInsideCemetery) {
-        const cemeteryBoundary = getCemeteryBoundary();
-        isInsideCemetery = pointInPolygon(
-          [userLocation.lng, userLocation.lat],
-          cemeteryBoundary
-        );
-
-        if (isInsideCemetery) {
-          showSuccess("Entered cemetery grounds - switching to internal navigation");
-        }
-      }
-
-      // Update navigation state
-      distanceToDestination = calculateRemainingDistance(closestIndex);
-      currentStep = getCurrentStep(closestIndex);
-
-      // Check if arrived
-      if (closestIndex >= currentRoute.coordinates.length - 2) {
-        completeNavigation();
-      }
-    }, 1000);
-  }
+    if ((isNearDestination && isRouteComplete) || isAtProperty) {
+      completeNavigation();
+    }
+  }, 2000); // Increased interval to 2 seconds for better stability
+}
 
    
 
@@ -594,10 +661,7 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
     return 'Continue to destination';
   }
 
-  function completeNavigation() {
-    stopNavigation();
-    showSuccess(`Arrived at ${selectedProperty?.name || 'destination'}`);
-  }
+
  function stopNavigation() {
   isNavigating = false;
   
@@ -618,6 +682,8 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
     map.setPaintProperty('cemetery-paths', 'line-opacity', 0);
     map.setFilter('cemetery-paths', null); // Remove filter to show all paths again
   }
+
+  
   
   // Clear route data
   currentRoute = null;
@@ -625,6 +691,33 @@ function nearestPointOnSegment(point, segmentStart, segmentEnd) {
   externalRoute = null;
   currentStep = '';
   distanceToDestination = 0;
+}
+
+
+
+
+// 6. Improved arrival detection in completeNavigation
+function completeNavigation() {
+  // Double-check we're actually at the destination before completing
+  if (selectedProperty && userLocation) {
+    const distanceToProperty = calculateDistance(
+      [userLocation.lng, userLocation.lat], 
+      [selectedProperty.lng, selectedProperty.lat]
+    );
+    
+    // Only complete if we're actually close (within 20 meters)
+    if (distanceToProperty > 20) {
+      return; // Don't complete yet
+    }
+  }
+  
+  stopNavigation();
+  showSuccess(`Arrived at ${selectedProperty?.name || 'destination'}!`);
+  
+  // Optional: Show celebration or additional info
+  setTimeout(() => {
+    showSuccess(`You have reached ${selectedProperty?.name}. Navigation completed.`);
+  }, 1000);
 }
   // Utility functions
   function calculateDistance(point1, point2) {
